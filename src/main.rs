@@ -13,13 +13,12 @@ async fn main() {
         match sensor.read_env_data().await {
             Ok(data) => {
                 println!("{:?} - {}", data.into_farenheit(), chrono::offset::Local::now());
-                tokio::time::sleep(time::Duration::from_secs(5)).await;
+                tokio::time::sleep(time::Duration::from_secs(10)).await;
             },
-            Err(_) => {
-                tokio::time::sleep(time::Duration::from_millis(100)).await;
-            },
+            _ => {}
         }
         // println!("-----------------------");
+        // tokio::time::sleep(time::Duration::from_secs(1)).await;
         
     }
 }

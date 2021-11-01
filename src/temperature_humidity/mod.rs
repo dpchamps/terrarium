@@ -54,7 +54,7 @@ impl EnvironmentSensor {
     }
 
     pub async fn read_env_data(&self) -> Result<EnvironmentData, ReadError> {
-        let data = match tokio::time::timeout(time::Duration::from_millis(150), self.read()).await {
+        let data = match tokio::time::timeout(time::Duration::from_millis(50), self.read()).await {
             Ok(result) => result.map_err(|e| ReadError::Sensor(e)),
             Err(_) => Err(ReadError::Sensor(SensorError::TimeoutError)),
         }?;
@@ -66,7 +66,7 @@ impl EnvironmentSensor {
         // println!("Line Info: {:?}", self.line.info());
 
         Self::send_start_signal(&self.line).await.map_err(|e| SensorError::GpioError(e))?;
-
+        // println!("Opening event handle {:?}", time::Instant::now());
         let line_evt_handle = self
             .line
             .events(
@@ -107,7 +107,6 @@ impl EnvironmentSensor {
     }
 
     async fn send_start_signal(line: &Line) -> Result<(), gpio_cdev::Error> {
-        // initialize sensor, [add link to docs]
         let handle = line.request(LineRequestFlags::OUTPUT, 1, "init-sequence")?;
 
         handle.set_value(0)?;
