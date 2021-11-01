@@ -1,31 +1,25 @@
 mod data;
 mod temperature_humidity;
 mod util;
-use std::{thread, time, process};
+use std::{process, thread, time};
 use temperature_humidity::EnvironmentSensor;
-
+use chrono;
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let sensor = EnvironmentSensor::init(13).unwrap();
 
-    // println!("Starting Read {:?}", time::Instant::now());
-    // let result = sensor.read().unwrap();
-    // println!(
-    //     "Ending Read {:?}",
-    //     time::Instant::now(),
-    // );
-    // let data = EnvironmentData::from_raw_output(&result).unwrap();
-    // println!("Environment data: ${:?}", data.into_farenheit());\
-
-    // println!("{:?}", sensor.read_env_data().unwrap().into_farenheit());
-
     loop {
-        println!("------------{}-----------", process::id());
+        // println!("------------{}-----------", process::id());
         match sensor.read_env_data().await {
-            Ok(data) => println!("{:?}", data.into_farenheit()),
-            Err(e) => println!("Failed to read with: {:?}", e),
+            Ok(data) => {
+                println!("{:?} - {}", data.into_farenheit(), chrono::offset::Local::now());
+                tokio::time::sleep(time::Duration::from_secs(5)).await;
+            },
+            Err(_) => {
+                tokio::time::sleep(time::Duration::from_millis(100)).await;
+            },
         }
-        println!("-----------------------");
-        thread::sleep(time::Duration::from_secs(2));
+        // println!("-----------------------");
+        
     }
 }

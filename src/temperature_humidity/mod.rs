@@ -1,11 +1,14 @@
 use crate::util::vec_to_int;
-use gpio_cdev::{Chip, EventRequestFlags, EventType, Line, LineEvent, LineRequestFlags, AsyncLineEventHandle};
+use futures::stream::StreamExt;
+use gpio_cdev::{
+    AsyncLineEventHandle, Chip, EventRequestFlags, EventType, Line, LineEvent, LineRequestFlags,
+};
 use itertools::Itertools;
+use std::future::Future;
 use std::sync::mpsc::{self, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::{thread, time};
-use std::future::Future;
 use tokio;
 
 #[derive(Debug, PartialEq)]
@@ -17,7 +20,7 @@ pub struct EnvironmentData {
 #[derive(Debug)]
 pub struct EnvironmentSensor {
     gpio_pin: u32,
-    // line: Line,
+    line: Line,
 }
 
 #[derive(Debug, PartialEq)]
@@ -29,6 +32,7 @@ pub enum ConversionError {
 #[derive(Debug)]
 pub enum SensorError {
     InvalidAck,
+    BadRead,
     GpioError(gpio_cdev::Error),
     TimeoutError,
 }
@@ -40,31 +44,31 @@ pub enum ReadError {
 }
 
 impl EnvironmentSensor {
-    pub fn init(gpio_pin: u32) -> Result<Self, gpio_cdev::Error> {
-        Ok(EnvironmentSensor { gpio_pin })
+    pub fn init(gpio_pin: u32) -> Result<Self, SensorError> {
+        let mut chip = Chip::new("/dev/gpiochip0").map_err(|e| SensorError::GpioError(e))?;
+        let line = chip
+            .get_line(gpio_pin)
+            .map_err(|e| SensorError::GpioError(e))?;
+
+        Ok(EnvironmentSensor { gpio_pin, line })
     }
 
     pub async fn read_env_data(&self) -> Result<EnvironmentData, ReadError> {
-        let data = self.read().await.map_err(|x| ReadError::Sensor(x))?;
+        let data = match tokio::time::timeout(time::Duration::from_millis(150), self.read()).await {
+            Ok(result) => result.map_err(|e| ReadError::Sensor(e)),
+            Err(_) => Err(ReadError::Sensor(SensorError::TimeoutError)),
+        }?;
 
         EnvironmentData::from_raw_output(&data).map_err(|x| ReadError::Conversion(x))
     }
 
     async fn read(&self) -> Result<Vec<u8>, SensorError> {
-        let mut chip = Chip::new("/dev/gpiochip0").map_err(|e| SensorError::GpioError(e))?;
-        
-        let line = chip
-            .get_line(self.gpio_pin)
-            .map_err(|e| SensorError::GpioError(e))?;
+        // println!("Line Info: {:?}", self.line.info());
 
-        println!("Line Info: {:?}", line.info());
-        println!("Sending init signal");
+        Self::send_start_signal(&self.line).await.map_err(|e| SensorError::GpioError(e))?;
 
-        Self::send_start_signal(&line).map_err(|e| SensorError::GpioError(e))?;
-
-
-        println!("Opening event handle");
-        let line_evt_handle = line
+        let line_evt_handle = self
+            .line
             .events(
                 LineRequestFlags::INPUT,
                 EventRequestFlags::BOTH_EDGES,
@@ -72,69 +76,42 @@ impl EnvironmentSensor {
             )
             .map_err(|e| SensorError::GpioError(e))?;
 
-            
-        
-        let mut async_events = AsyncLineEventHandle::new(line_evt_handle);
-        
-        let response = match tokio::time::timeout(
-            time::Duration::from_millis(500),
-            {
-                let event = async_events.next().await;
+        let mut async_events =
+            AsyncLineEventHandle::new(line_evt_handle).map_err(|e| SensorError::GpioError(e))?;
+
+        match async_events.next().await.ok_or(SensorError::BadRead)? {
+            Err(e) => Err(SensorError::GpioError(e)),
+            Ok(e) if e.event_type() != EventType::FallingEdge => Err(SensorError::InvalidAck),
+            Ok(_) => {
+                let mut result: Vec<u8> = Vec::new();
+
+                for _ in 0..40 {
+                    let edge_one = async_events
+                        .next()
+                        .await
+                        .ok_or(SensorError::BadRead)?
+                        .map_err(|e| SensorError::GpioError(e))?;
+                    let edge_two = async_events
+                        .next()
+                        .await
+                        .ok_or(SensorError::BadRead)?
+                        .map_err(|e| SensorError::GpioError(e))?;
+
+                    let bit = Self::line_evt_tuple_to_bit((edge_one, edge_two));
+
+                    result.push(bit);
+                }
+                Ok(result)
             }
-        ) {
-            _ => Ok(())
-        };
-
-
-        
-        unimplemented!()
-
-        // let (sender, receiver) = mpsc::channel();
-        // let read_thread = thread::spawn(move || {
-            
-        //     println!("fd {:?}", line_evt_handle.as_raw_fd());
-        //     let result: Result<Vec<u8>, SensorError> = match line_evt_handle.next().unwrap() {
-        //         Err(e) => Err(SensorError::GpioError(e)),
-        //         // the first event needs to be a line down ack
-        //         // from the sensor.
-        //         // If it's not, something funky happened
-        //         Ok(e) if e.event_type() != EventType::FallingEdge => Err(SensorError::InvalidAck),
-        //         _ => Ok(line_evt_handle
-        //             .take(80)
-        //             .flat_map(|evt| evt.ok())
-        //             .tuples()
-        //             .map(Self::line_evt_tuple_to_bit)
-        //             .collect()),
-        //     };
-
-        //     sender.send(result);
-        // });
-
-        // // timeout, ensure the sensor can't get in a bad state
-        // thread::sleep(time::Duration::from_millis(100));
-
-        // match receiver.try_recv() {
-        //     Ok(data) => data,
-        //     Err(e) => {
-        //         println!("try_recv err: {:?}", e);
-        //         // drop(receiver);
-        //         // drop(read_thread);
-        //         // drop(line_evt_handle);
-
-        //         Err(SensorError::TimeoutError)
-        //     }
-        // }
+        }
     }
 
-    fn send_start_signal(line: &Line) -> Result<(), gpio_cdev::Error> {
+    async fn send_start_signal(line: &Line) -> Result<(), gpio_cdev::Error> {
         // initialize sensor, [add link to docs]
-        println!("Requesting handle");
         let handle = line.request(LineRequestFlags::OUTPUT, 1, "init-sequence")?;
-        println!("Setting value");
+
         handle.set_value(0)?;
-        thread::sleep(time::Duration::from_micros(1000));
-        // handle.set_value(1)?;
-        // thread::sleep(time::Duration::from_micros(20));
+        tokio::time::sleep(time::Duration::from_millis(2)).await;
         Ok(())
     }
 
