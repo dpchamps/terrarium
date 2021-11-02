@@ -3,13 +3,7 @@ use futures::stream::StreamExt;
 use gpio_cdev::{
     AsyncLineEventHandle, Chip, EventRequestFlags, EventType, Line, LineEvent, LineRequestFlags,
 };
-use itertools::Itertools;
-use std::future::Future;
-use std::sync::mpsc::{self, TryRecvError};
-use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
-use std::{thread, time};
-use tokio;
+use std::time;
 
 #[derive(Debug, PartialEq)]
 pub struct EnvironmentData {
@@ -45,28 +39,27 @@ pub enum ReadError {
 
 impl EnvironmentSensor {
     pub fn init(gpio_pin: u32) -> Result<Self, SensorError> {
-        let mut chip = Chip::new("/dev/gpiochip0").map_err(|e| SensorError::GpioError(e))?;
-        let line = chip
-            .get_line(gpio_pin)
-            .map_err(|e| SensorError::GpioError(e))?;
+        let mut chip = Chip::new("/dev/gpiochip0").map_err(SensorError::GpioError)?;
+        let line = chip.get_line(gpio_pin).map_err(SensorError::GpioError)?;
 
         Ok(EnvironmentSensor { gpio_pin, line })
     }
 
     pub async fn read_env_data(&self) -> Result<EnvironmentData, ReadError> {
         let data = match tokio::time::timeout(time::Duration::from_millis(50), self.read()).await {
-            Ok(result) => result.map_err(|e| ReadError::Sensor(e)),
+            Ok(result) => result.map_err(ReadError::Sensor),
             Err(_) => Err(ReadError::Sensor(SensorError::TimeoutError)),
         }?;
 
-        EnvironmentData::from_raw_output(&data).map_err(|x| ReadError::Conversion(x))
+        EnvironmentData::from_raw_output(&data).map_err(ReadError::Conversion)
     }
 
     async fn read(&self) -> Result<Vec<u8>, SensorError> {
-        // println!("Line Info: {:?}", self.line.info());
 
-        Self::send_start_signal(&self.line).await.map_err(|e| SensorError::GpioError(e))?;
-        // println!("Opening event handle {:?}", time::Instant::now());
+        Self::send_start_signal(&self.line)
+            .await
+            .map_err(SensorError::GpioError)?;
+            
         let line_evt_handle = self
             .line
             .events(
@@ -74,13 +67,18 @@ impl EnvironmentSensor {
                 EventRequestFlags::BOTH_EDGES,
                 "read-sensor-data",
             )
-            .map_err(|e| SensorError::GpioError(e))?;
+            .map_err(SensorError::GpioError)?;
 
         let mut async_events =
-            AsyncLineEventHandle::new(line_evt_handle).map_err(|e| SensorError::GpioError(e))?;
+            AsyncLineEventHandle::new(line_evt_handle).map_err(SensorError::GpioError)?;
 
         match async_events.next().await.ok_or(SensorError::BadRead)? {
             Err(e) => Err(SensorError::GpioError(e)),
+            // The sensore will sent pull-down on the line as an ack.
+            // If we don't get that first pull down, then we've missed it
+            // Or the sensor did not get the pulse.
+            // Since we could be in the middle of the read at this point, instead
+            // Of consuming the rest of the stream, eject
             Ok(e) if e.event_type() != EventType::FallingEdge => Err(SensorError::InvalidAck),
             Ok(_) => {
                 let mut result: Vec<u8> = Vec::new();
@@ -90,12 +88,12 @@ impl EnvironmentSensor {
                         .next()
                         .await
                         .ok_or(SensorError::BadRead)?
-                        .map_err(|e| SensorError::GpioError(e))?;
+                        .map_err(SensorError::GpioError)?;
                     let edge_two = async_events
                         .next()
                         .await
                         .ok_or(SensorError::BadRead)?
-                        .map_err(|e| SensorError::GpioError(e))?;
+                        .map_err(SensorError::GpioError)?;
 
                     let bit = Self::line_evt_tuple_to_bit((edge_one, edge_two));
 
@@ -107,6 +105,10 @@ impl EnvironmentSensor {
     }
 
     async fn send_start_signal(line: &Line) -> Result<(), gpio_cdev::Error> {
+        // Send the start signal to the sensor.
+        // It expects a pull-down write over the line for at-least 1 ms,
+        // Using 2 ms here for some padding. This is finnicky, and
+        // there's not much I've found that works 100% of the time.
         let handle = line.request(LineRequestFlags::OUTPUT, 1, "init-sequence")?;
 
         handle.set_value(0)?;
@@ -138,10 +140,10 @@ impl EnvironmentData {
             .map(|byte_pair| ((byte_pair[0] as u16) << 8) + (byte_pair[1] as u16))
             .collect();
 
-        return Ok(EnvironmentData {
+        Ok(EnvironmentData {
             humidity: result[0] as f32 / 10.0,
             temp: result[1] as f32 / 10.0,
-        });
+        })
     }
 
     fn validate(converted: &[u8]) -> Result<(), ConversionError> {
@@ -150,8 +152,8 @@ impl EnvironmentData {
 
         let checksum = converted.last().ok_or(ConversionError::UnexpectedInput)?;
         let sum = converted[0..4]
-            .into_iter()
-            .fold(0 as u8, |sum, &byte| sum.overflowing_add(byte).0);
+            .iter()
+            .fold(0_u8, |sum, &byte| sum.overflowing_add(byte).0);
 
         if *checksum != sum {
             return Err(ConversionError::BadChecksum);
