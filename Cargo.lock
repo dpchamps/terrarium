@@ -46,6 +46,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e78d4f1cc4ae33bbfc157ed5d5a5ef3bc29227303d595861deb238fcec4e9457"
 
 [[package]]
+name = "envconfig"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea81cc7e21f55a9d9b1efb6816904978d0bfbe31a50347cb24b2e75564bcac9b"
+dependencies = [
+ "envconfig_derive",
+]
+
+[[package]]
+name = "envconfig_derive"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dfca278e5f84b45519acaaff758ebfa01f18e96998bc24b8f1b722dd804b9bf"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -318,6 +338,7 @@ name = "terrarium"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "envconfig",
  "futures",
  "gpio-cdev",
  "itertools",

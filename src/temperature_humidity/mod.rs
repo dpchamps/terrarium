@@ -46,20 +46,34 @@ impl EnvironmentSensor {
     }
 
     pub async fn read_env_data(&self) -> Result<EnvironmentData, ReadError> {
-        let data = match tokio::time::timeout(time::Duration::from_millis(50), self.read()).await {
-            Ok(result) => result.map_err(ReadError::Sensor),
+        match tokio::time::timeout(time::Duration::from_secs(3), self.read_sequence()).await {
+            Ok(result) => Ok(result),
             Err(_) => Err(ReadError::Sensor(SensorError::TimeoutError)),
-        }?;
+        }
+    }
 
-        EnvironmentData::from_raw_output(&data).map_err(ReadError::Conversion)
+    async fn read_sequence(&self) -> EnvironmentData {
+        // Timing is a but wonky, can't figure out how to get a precise read
+        // every single time.
+        // The part is like 5 bucks, it's probably just not great.
+        // Instead, just loop until a good read comes through.
+        loop {
+            match tokio::time::timeout(time::Duration::from_millis(10), self.read()).await {
+                Ok(Ok(result)) => {
+                    if let Ok(converted) = EnvironmentData::from_raw_output(&result).map_err(ReadError::Conversion) {
+                        return converted;
+                    }
+                },
+                _ => {}
+            }
+        }
     }
 
     async fn read(&self) -> Result<Vec<u8>, SensorError> {
-
         Self::send_start_signal(&self.line)
             .await
             .map_err(SensorError::GpioError)?;
-            
+
         let line_evt_handle = self
             .line
             .events(
@@ -74,7 +88,7 @@ impl EnvironmentSensor {
 
         match async_events.next().await.ok_or(SensorError::BadRead)? {
             Err(e) => Err(SensorError::GpioError(e)),
-            // The sensore will sent pull-down on the line as an ack.
+            // The sensor will sent pull-down on the line as an ack.
             // If we don't get that first pull down, then we've missed it
             // Or the sensor did not get the pulse.
             // Since we could be in the middle of the read at this point, instead
