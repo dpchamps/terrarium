@@ -41,12 +41,19 @@ impl Default for ApplicationState {
     }
 }
 
+/** Immutable config needed for app startup */
 #[derive(Envconfig)]
 pub struct AppConfig {
     #[envconfig(from = "DHT22_PIN", default = "13")]
     pub dht22_pin: u32,
     #[envconfig(from = "MISTER_PIN", default = "19")]
     pub mister_pin: u32,
-    #[envconfig(from = "CO2_PIN", default = "10")]
-    pub co2_pin: u32,
+    #[envconfig(from = "CCS811_I2C_ADDR", default = "90" /* 0x5A = 90 */)]
+    pub ccs811_i2c_addr: u16,
+    #[envconfig(from = "CCS811_WAK_PIN", default = "6")]
+    pub ccs811_wak_pin: u16,
+    #[envconfig(from = "SDA_PIN", default = "2")]
+    pub sda_pin: u16,
+    #[envconfig(from = "SCL_PIN", default = "3")]
+    pub scl_pin: u16
 }
